@@ -18,7 +18,7 @@ Returns the last logged-in user on a device, helpful for tracking user activity 
 ### [Get-LogZips.ps1](./Get-LogZips.ps1)
 Collects key logs and zips them for export, ideal for remote troubleshooting or escalations.
 
-### [Get-Monitor-Serial.ps1](./Get-Monitor-Serial.ps1) *(optional)*
+### [Get-Monitor-Serial.ps1](./Get-Monitor-Serial.ps1)
 Retrieves serial numbers of attached monitors for inventory or diagnostics.
 
 ---
