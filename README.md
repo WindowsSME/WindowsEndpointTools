@@ -1,6 +1,6 @@
-# QASystemChecks
+# WindowsEndpointTools
 
-A collection of PowerShell scripts designed for quick system audits, diagnostics, and quality assurance checks in Windows environments. These tools are great for helpdesk, IT audits, or onboarding checklists.
+PowerShell scripts for running diagnostics and performing lightweight remediation on Windows endpoints. Ideal for helpdesk use, pre-deployment health checks, or remote support workflows.
 
 ---
 
