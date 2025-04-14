@@ -7,19 +7,22 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 ## Included Scripts
 
 ### [QAChecker.ps1](./QAChecker.ps1)
-Performs a series of checks to ensure the system meets internal QA standards before deployment.
+Performs a series of basic system checks (uptime, disk space, antivirus status, etc.) to verify that the system meets internal QA standards.
 
 ### [Profile-SpaceCheck.ps1](./Profile-SpaceCheck.ps1)
-Scans all user profiles and reports on disk space usage to help identify bloat or cleanup candidates.
+Scans all user profile folders and reports disk usage, helping identify storage bloat and cleanup candidates.
 
 ### [Get-LastLoggedUser.ps1](./Get-LastLoggedUser.ps1)
-Returns the last logged-in user on a device, helpful for tracking user activity or ownership.
+Returns the most recent interactive user login — useful for tracking device ownership or troubleshooting.
 
 ### [Get-LogZips.ps1](./Get-LogZips.ps1)
-Collects key logs and zips them for export, ideal for remote troubleshooting or escalations.
+Collects logs from common system locations (Event Logs, WindowsUpdate, etc.), then compresses them for export or escalation.
 
 ### [Get-Monitor-Serial.ps1](./Get-Monitor-Serial.ps1)
-Retrieves serial numbers of attached monitors for inventory or diagnostics.
+Fetches serial numbers of connected monitors — helpful for physical asset management and inventory.
+
+### [Get-WebcamInfo.ps1](./Get-WebcamInfo.ps1)
+Detects available webcam devices, identifies if they are internal or external, and includes support for fallback detection via WMI.
 
 ---
 
