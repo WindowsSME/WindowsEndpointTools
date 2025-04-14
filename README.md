@@ -44,6 +44,11 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Check-UserFolders.ps1](./stable/Check-UserFolders.ps1)  
   Scans and summarizes user profile folders (like Documents, Downloads, etc.) for size and contents.
 
+### System Tuning
+
+- [Set-PowerScheme.ps1](./Set-PowerScheme.ps1)  
+  Ensures a clean, single "High Performance" power plan is active. Removes duplicates and configures power settings (disk, display, sleep, hibernate) for max performance.
+
 ---
 
 ## Usage
