@@ -49,6 +49,11 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Set-PowerScheme.ps1](./Set-PowerScheme.ps1)  
   Ensures a clean, single "High Performance" power plan is active. Removes duplicates and configures power settings (disk, display, sleep, hibernate) for max performance.
 
+### Software Inventory & Audit
+
+- [Get-ZoomVersion.ps1](./Get-ZoomVersion.ps1)  
+  Scans user profiles and system paths to list unique installed Zoom versions on a Windows device.
+
 ---
 
 ## Usage
