@@ -1,4 +1,4 @@
-# WindowsEndpointTools
+# Windows Endpoint Tools
 
 PowerShell scripts for running diagnostics and performing lightweight remediation on Windows endpoints. Ideal for helpdesk use, pre-deployment health checks, or remote support workflows.
 
