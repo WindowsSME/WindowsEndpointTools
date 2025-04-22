@@ -1,7 +1,7 @@
 #Author: James Romeo Gaspar
 #Revision: 1.2 [13Jan2023]
 $Win_profpath = "C:\Users\"
-$SkippedAccounts = @('CISADMIN' , 'Public' , 'NetworkService' , 'LocalService' , 'systemprofile')
+$SkippedAccounts = @('ADMIN' , 'Public' , 'NetworkService' , 'LocalService' , 'systemprofile')
 $UserProfileFolders = (Get-ChildItem -Path $Win_profpath | Where-Object {($_.Name -ne $null) -and ($_.Name -notin $SkippedAccounts)}).FullName
 $UserProfileSIDs = (Get-CimInstance -Class Win32_UserProfile | Where-Object { ($_.LocalPath -ne $null) -and ($_.LocalPath.split('\')[-1] -notin $SkippedAccounts) }).LocalPath
 $DefProps = @(
