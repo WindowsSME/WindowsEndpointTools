@@ -54,6 +54,11 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Get-ZoomVersion.ps1](./Get-ZoomVersion.ps1)  
   Scans user profiles and system paths to list unique installed Zoom versions on a Windows device.
 
+### Security & Compliance
+
+- [Get-BitLockerComplianceReport.ps1](./Get-BitLockerComplianceReport.ps1)  
+  Generates a compliance report detailing BitLocker encryption status across system volumes, useful for audits and security checks.
+
 ---
 
 ## Usage
