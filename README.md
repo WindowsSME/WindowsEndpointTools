@@ -59,6 +59,9 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Get-BitLockerComplianceReport.ps1](./Get-BitLockerComplianceReport.ps1)  
   Generates a compliance report detailing BitLocker encryption status across system volumes, useful for audits and security checks.
 
+- [Get-BitlockerStatus.ps1](./Get-BitlockerStatus.ps1)  
+  Retrieves the current BitLocker encryption status of all system drives, providing a quick local security overview.
+
 ---
 
 ## Usage
