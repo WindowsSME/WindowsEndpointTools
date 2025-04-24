@@ -62,6 +62,12 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Get-BitlockerStatus.ps1](./Get-BitlockerStatus.ps1)  
   Retrieves the current BitLocker encryption status of all system drives, providing a quick local security overview.
 
+- [XDR-AppChecker.ps1](./XDR-AppChecker.ps1)  
+  Checks for the presence, status, or installation of an XDR endpoint protection agent.
+
+- [XDR-ServerStatusCheck.ps1](./XDR-ServerStatusCheck.ps1)  
+  Tests connectivity and response from the XDR management server to verify communication from the endpoint.
+
 ---
 
 ## Usage
