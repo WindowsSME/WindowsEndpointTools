@@ -68,6 +68,11 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [XDR-ServerStatusCheck.ps1](./XDR-ServerStatusCheck.ps1)  
   Tests connectivity and response from the XDR management server to verify communication from the endpoint.
 
+### Configuration Diagnostics
+
+- [Compare-RegFiles.ps1](./Compare-RegFiles.ps1)  
+  Compares three `.reg` files to identify added, removed, or changed settings and generates diff files and a CSV summary.
+
 ---
 
 ## Usage
