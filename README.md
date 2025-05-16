@@ -38,10 +38,10 @@ PowerShell scripts for running diagnostics and performing lightweight remediatio
 - [Profile-SpaceCheck.ps1](./Profile-SpaceCheck.ps1)  
   Scans all user profile folders and reports disk usage, helping identify storage bloat and cleanup candidates.
 
-- [Check-DiskUsage.ps1](./stable/Check-DiskUsage.ps1)  
+- [Check-DiskUsage.ps1](./Check-DiskUsage.ps1)  
   Checks free space across system drives and reports disk usage.
 
-- [Check-UserFolders.ps1](./stable/Check-UserFolders.ps1)  
+- [Check-UserFolders.ps1](./Check-UserFolders.ps1)  
   Scans and summarizes user profile folders (like Documents, Downloads, etc.) for size and contents.
 
 ### Performance Optimization
