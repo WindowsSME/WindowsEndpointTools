@@ -29,161 +29,209 @@
     Updated : July 30, 2025
 
 .LINK
-    For troubleshooting or enhancements, contact your friendly local scripting wizard 😄
+    For troubleshooting or enhancements, contact your friendly local scripting wizard - james.gaspar@taskus.com;)
 #>
 
+[CmdletBinding()]
+param(
+    # Enable or disable actual file operations
+    [switch]   $Simulate       = $false,
+    # Define the minimum acceptable MSI version
+    [version]  $MinimumVersion = [version]"24.10",
+    # Destination directory for the final MSI
+    [string]   $TargetDir      = "C:\Temp",
+    # Directories to search for AirwatchAgent MSIs
+    [string[]] $SearchDirs     = @("C:\", "C:\@GlobalProtect")
+)
 
-$Simulate = $false
+# Store simulation flag
+$script:Simulate = $Simulate
 
+#-----------------------------------------
+# Function: Get-MSIProductVersion
+# Retrieves the ProductVersion property from an MSI
+#-----------------------------------------
 function Get-MSIProductVersion {
-    param ([string]$msiPath)
+    param([string]$MsiPath)
+
+    # Skip if the file does not exist
+    if (-not (Test-Path $MsiPath)) { return $null }
+
+    # Initialize COM objects
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $null; $view = $null
     try {
-        if (-not (Test-Path $msiPath)) { return $null }
-        $installer = New-Object -ComObject WindowsInstaller.Installer
-        $db = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @($msiPath, 0))
-        $view = $db.OpenView("SELECT Value FROM Property WHERE Property = 'ProductVersion'")
-        $view.Execute()
-        $record = $view.Fetch()
-        if ($record) { return [version]$record.StringData(1) }
-    } catch { return $null }
-    return $null
+        # Open MSI database and query ProductVersion
+        $db = $installer.GetType().InvokeMember(
+            "OpenDatabase", 'InvokeMethod', $null, $installer, @($MsiPath, 0)
+        )
+        $view = $db.OpenView("SELECT Value FROM Property WHERE Property='ProductVersion'")
+        $view.Execute(); $rec = $view.Fetch()
+
+        # Return the version if found
+        if ($rec) { return [version]$rec.StringData(1) }
+        return $null
+    }
+    catch {
+        # Log failure in verbose mode
+        Write-Verbose "Failed reading version from ${MsiPath}: $_"
+        return $null
+    }
+    finally {
+        # Clean up COM objects
+        if ($view) { try { $view.Close() } catch {} ; [Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null }
+        if ($db)   { [Runtime.InteropServices.Marshal]::ReleaseComObject($db)   | Out-Null }
+        [Runtime.InteropServices.Marshal]::ReleaseComObject($installer) | Out-Null
+    }
 }
 
-function Try-Delete {
-    param (
+#-----------------------------------------
+# Function: Try-Rename
+# Attempts to rename a file with retry logic
+#-----------------------------------------
+function Try-Rename {
+    param(
         [string]$Path,
-        [int]$MaxRetries = 3,
-        [int]$DelaySeconds = 5
+        [string]$NewName,
+        [int]   $MaxRetries   = 3,
+        [int]   $DelaySeconds = 5
     )
+    # In simulate mode, just log the action
+    if ($script:Simulate) { Write-Output "Would rename: '$Path' → '$NewName'"; return $true }
 
     for ($i = 1; $i -le $MaxRetries; $i++) {
         try {
-            Remove-Item -Path $Path -Force -ErrorAction Stop
-            # Write-Output "Deleted file: $Path (attempt $i)"
-            return
-        } catch {
-            if ($i -eq $MaxRetries) {
-                Write-Warning "FAILED to delete file after $MaxRetries attempts: $Path. $_"
-            } else {
-                Start-Sleep -Seconds $DelaySeconds
-            }
+            Rename-Item -Path $Path -NewName $NewName -Force -ErrorAction Stop
+            Write-Verbose "Renamed '$Path' to '$NewName'"
+            return $true
+        }
+        catch {
+            if ($i -eq $MaxRetries) { Write-Warning "Failed rename after $MaxRetries tries: $_"; return $false }
+            Start-Sleep -Seconds $DelaySeconds
         }
     }
 }
 
-# Define search directories
-$userFolders = Get-ChildItem "C:\Users" -Directory |
-    Where-Object { $_.Name -notin @("Default", "All Users", "Public") }
+#-----------------------------------------
+# Function: Try-Copy
+# Attempts to copy a file with retry logic
+#-----------------------------------------
+function Try-Copy {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [int]   $MaxRetries   = 3,
+        [int]   $DelaySeconds = 5
+    )
+    # In simulate mode, just log the action
+    if ($script:Simulate) { Write-Output "Would copy: '$SourcePath' → '$DestinationPath'"; return $true }
 
-$profileLocations = @()
-
-foreach ($user in $userFolders) {
-    foreach ($sub in @("Downloads", "Desktop", "Documents")) {
-        $folder = Join-Path $user.FullName $sub
-        if (Test-Path $folder) {
-            $profileLocations += $folder
-        }
-    }
-}
-
-$allPaths = ($dirs + $profileLocations) | Sort-Object -Unique
-
-# Find MSI files
-$msiFiles = @()
-foreach ($dir in $allPaths) {
-    $recurse = if ($dir -eq "C:\") { $false } else { $true }
-    $files = Get-ChildItem -Path $dir -Filter "AirwatchAgent*.msi" -Recurse:$recurse -ErrorAction SilentlyContinue
-    if ($files) { $msiFiles += $files }
-}
-
-# Version filtering
-$minimumVersion = [version]"24.10"
-$validFiles = @()
-
-foreach ($file in $msiFiles) {
-    $version = Get-MSIProductVersion -msiPath $file.FullName
-    if ($version -and $version -ge $minimumVersion) {
-        $validFiles += [pscustomobject]@{
-            Path    = $file.FullName
-            Version = $version
-            Name    = $file.Name
-        }
-    } else {
-        if ($Simulate) {
-            Write-Output "Would delete old/incompatible file: $($file.FullName)"
-        } else {
-            Try-Delete -Path $file.FullName
-        }
-    }
-}
-
-if ($validFiles.Count -eq 0) {
-    Write-Output "No valid MSI files found above version $minimumVersion"
-    return
-}
-
-# Determine the latest valid version
-$latestFile = $validFiles | Sort-Object Version -Descending | Select-Object -First 1
-$targetDir = "C:\Temp"
-$targetPath = Join-Path $targetDir "AirwatchAgent.msi"
-
-# Rename if only one valid and oddly named
-if ($validFiles.Count -eq 1) {
-    $single = $validFiles[0]
-    if ($single.Name -ne "AirwatchAgent.msi") {
-        $newPath = Join-Path (Split-Path $single.Path) "AirwatchAgent.msi"
-        if ($Simulate) {
-            Write-Output "Would rename: $($single.Path) → $newPath"
-        } else {
-            try {
-                Rename-Item -Path $single.Path -NewName "AirwatchAgent.msi" -Force -ErrorAction Stop
-                # Write-Output "Renamed file to: $newPath"
-                $single.Path = $newPath
-            } catch {
-                Write-Warning "FAILED to rename $($single.Path). $_"
-            }
-        }
-    }
-}
-
-# Move/copy latest to target location
-if ($latestFile.Path -ne $targetPath) {
-    if ($Simulate) {
-        Write-Output "Would move: $($latestFile.Path) → $targetPath"
-    } else {
+    for ($i = 1; $i -le $MaxRetries; $i++) {
         try {
-            if (Test-Path $targetPath) {
-                Try-Delete -Path $targetPath
-            }
-            Copy-Item -Path $latestFile.Path -Destination $targetPath -Force -ErrorAction Stop
-            # Write-Output "Copied latest MSI to: $targetPath"
-            $latestFile.Path = $targetPath
-        } catch {
-            Write-Warning "FAILED to copy or replace target MSI. $_"
+            Copy-Item -Path $SourcePath -Destination $DestinationPath -Force -ErrorAction Stop
+            Write-Verbose "Copied to '$DestinationPath'"
+            return $true
+        }
+        catch {
+            if ($i -eq $MaxRetries) { Write-Warning "Failed copy after $MaxRetries tries: $_"; return $false }
+            Start-Sleep -Seconds $DelaySeconds
         }
     }
 }
 
-# Remove all other valid copies
-foreach ($file in $validFiles) {
-    if ($file.Path -ne $latestFile.Path -and $file.Path -ne $targetPath) {
-        if ($Simulate) {
-            Write-Output "Would delete redundant valid file: $($file.Path)"
-        } else {
-            Try-Delete -Path $file.Path
+#-----------------------------------------
+# Function: Try-Delete
+# Attempts to delete a file with retry logic
+#-----------------------------------------
+function Try-Delete {
+    param(
+        [string]$Path,
+        [int]   $MaxRetries   = 3,
+        [int]   $DelaySeconds = 5
+    )
+    # In simulate mode, just log the action
+    if ($script:Simulate) { Write-Output "Would delete: '$Path'"; return }
+
+    for ($i = 1; $i -le $MaxRetries; $i++) {
+        try {
+            Write-Verbose "Deleting '$Path' (attempt $i)"
+            Remove-Item -Path $Path -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($i -eq $MaxRetries) { Write-Warning "Failed delete after $MaxRetries tries: $_" }
+            Start-Sleep -Seconds $DelaySeconds
         }
     }
 }
 
-# Remove leftover variants in C:\Temp
-Get-ChildItem -Path $targetDir -Filter "AirwatchAgent*.msi" -ErrorAction SilentlyContinue | Where-Object {
-    $_.FullName -ne $targetPath
-} | ForEach-Object {
-    if ($Simulate) {
-        Write-Output "Would remove leftover in Temp: $($_.FullName)"
-    } else {
-        Try-Delete -Path $_.FullName
+#-----------------------------------------
+# MAIN SCRIPT FLOW
+#-----------------------------------------
+
+# 1. Collect user profile subfolders
+$userFolders = Get-ChildItem 'C:\Users' -Directory |
+    Where-Object Name -notin @('Default','Public','All Users','Default User')
+$profileLocations = foreach ($u in $userFolders) {
+    foreach ($sub in 'Downloads','Desktop','Documents','Pictures','Videos') {
+        $p = Join-Path $u.FullName $sub; if (Test-Path $p) { $p }
     }
 }
 
-Write-Output "Retained latest version: $($latestFile.Version) at $targetPath"
+# 2. Combine search paths
+$allPaths = ($SearchDirs + $TargetDir + $profileLocations) | Sort-Object -Unique
+
+# 3. Find AirwatchAgent*.msi files
+$msiFiles = foreach ($dir in $allPaths) {
+    Get-ChildItem -Path $dir -Filter 'AirwatchAgent*.msi' -Recurse:($dir -ne 'C:\') -ErrorAction SilentlyContinue
+}
+
+# 4. Filter by version and delete older ones
+$validFiles = [System.Collections.Generic.List[psobject]]::new()
+foreach ($f in $msiFiles) {
+    $ver = Get-MSIProductVersion -MsiPath $f.FullName
+    if ($ver -and $ver -ge $MinimumVersion) { $validFiles.Add([pscustomobject]@{ Path=$f.FullName;Version=$ver }) }
+    else { Try-Delete -Path $f.FullName }
+}
+
+# Stop if no valid files found
+if ($validFiles.Count -eq 0) { Write-Output "No valid MSIs ≥ $MinimumVersion"; return }
+
+# 5. Ensure target directory exists
+if (-not (Test-Path $TargetDir)) {
+    if ($script:Simulate) { Write-Output "Would create '$TargetDir'" }
+    else { New-Item -Path $TargetDir -ItemType Directory -Force | Out-Null }
+}
+
+# 6. Pick latest MSI
+$latest = $validFiles | Sort-Object Version -Descending | Select-Object -First 1
+$targetPath = Join-Path $TargetDir 'AirwatchAgent.msi'
+
+# 7. Rename single file if needed
+if ($validFiles.Count -eq 1 -and ($latest.Path -notlike '*AirwatchAgent.msi')) {
+    $newPath = Join-Path (Split-Path $latest.Path) 'AirwatchAgent.msi'
+    Try-Rename -Path $latest.Path -NewName 'AirwatchAgent.msi' | Out-Null
+    $latest.Path = $newPath
+}
+
+# 8. Copy latest to target
+if ($latest.Path -ne $targetPath) {
+    if (Test-Path $targetPath) { Try-Delete -Path $targetPath }
+    Try-Copy -SourcePath $latest.Path -DestinationPath $targetPath | Out-Null
+    # Update paths in memory
+    foreach ($item in $validFiles) {
+        if ($item.Path -eq $latest.Path) { $item.Path = $targetPath }
+    }
+}
+
+# 9. Remove duplicates everywhere else
+foreach ($item in $validFiles) {
+    if ($item.Path -ne $targetPath) { Try-Delete -Path $item.Path }
+}
+
+# 10. Cleanup leftover MSIs in target directory
+Get-ChildItem -Path $TargetDir -Filter 'AirwatchAgent*.msi' -ErrorAction SilentlyContinue |
+    Where-Object FullName -ne $targetPath | ForEach-Object { Try-Delete -Path $_.FullName }
+
+# Final status message
+Write-Output "Retained: $($latest.Version) at $targetPath"
