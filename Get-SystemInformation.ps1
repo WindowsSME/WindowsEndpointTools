@@ -63,18 +63,52 @@ function Get-SystemSerialNumber {
 # --- Function to get the currently logged in username (with fallback) ---
 
 function Get-Username {
-    $username = $env:USERNAME
 
-    if ([string]::IsNullOrWhiteSpace($username)) {
-        $username = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -split '\\')[-1]
+    try {
+        $consoleUser = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+        if (-not [string]::IsNullOrWhiteSpace($consoleUser)) {
+            return ($consoleUser -split '\\')[-1]
+        }
+    } catch {}
+
+    try {
+        $explorer = Get-CimInstance Win32_Process -Filter "name='explorer.exe'" -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+        if ($explorer) {
+            $owner = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner
+            if ($owner.ReturnValue -eq 0 -and -not [string]::IsNullOrWhiteSpace($owner.User)) {
+                return $owner.User
+            }
+        }
+    } catch {}
+
+    try {
+        $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI'
+        $props   = Get-ItemProperty -Path $regPath -ErrorAction Stop
+        $raw     = $props.LastLoggedOnUser
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            if ($raw -like '*@*') {
+                # UPN -> take left side
+                return ($raw -split '@')[0]
+            } else {
+                # DOMAIN\user -> take right side
+                return ($raw -split '\\', 2)[-1]
+            }
+        }
+    } catch {}
+
+    $tm = $env:USERNAME
+    if ([string]::IsNullOrWhiteSpace($tm)) {
+        try { $tm = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -split '\\')[-1] } catch {}
     }
 
-    if ($username -match '\\') {
-        $username = ($username -split '\\')[-1]
+    if ($tm -match '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$' -or $tm -match '\$$') {
+        return ''
     }
 
-    return $username
+    return $tm
 }
+
 
 # --- Function to get the serial number ---
 
