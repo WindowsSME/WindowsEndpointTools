@@ -88,10 +88,8 @@ function Get-Username {
         $raw     = $props.LastLoggedOnUser
         if (-not [string]::IsNullOrWhiteSpace($raw)) {
             if ($raw -like '*@*') {
-                # UPN -> take left side
                 return ($raw -split '@')[0]
             } else {
-                # DOMAIN\user -> take right side
                 return ($raw -split '\\', 2)[-1]
             }
         }
@@ -110,7 +108,7 @@ function Get-Username {
 }
 
 
-# --- Function to get the serial number ---
+# --- Function to get the installed RAM (GB) ---
 
 function Get-InstalledRAMGB {
     try { $mem = Get-CimInstance -ClassName Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum }
@@ -162,35 +160,126 @@ function Get-RAMModuleCount {
     catch { @(Get-WmiObject -Class Win32_PhysicalMemory).Count }
 }
 
+# --- Function to output the friendly name of the manufacturer ---
+
+function Get-FriendlyManufacturer {
+    [CmdletBinding()]
+    param(
+        [string]$Raw,
+        [hashtable]$AdditionalMap
+    )
+    if ([string]::IsNullOrWhiteSpace($Raw)) { return '' }
+
+    # Already looks like a brand? normalize and return
+    if ($Raw -match '[A-Za-z]' -and $Raw -notmatch '^[0-9A-Fa-f]+$') {
+        return ($Raw -replace '\s+', ' ').Trim()
+    }
+
+    # Common JEP-106 last-byte → brand (extend as you discover more)
+    $map = @{
+        'CE' = 'Samsung'
+        'AD' = 'SK Hynix'
+        '2C' = 'Micron'
+        '98' = 'Kingston'
+    }
+    if ($AdditionalMap) { foreach ($k in $AdditionalMap.Keys) { $map[$k.ToUpper()] = $AdditionalMap[$k] } }
+
+    # Extract hex pairs; ignore 7F/00; take LAST non-7F byte
+    $pairs = ($Raw -replace '[^0-9A-Fa-f]', '').ToUpper() -split '([0-9A-F]{2})' |
+             Where-Object { $_ -match '^[0-9A-F]{2}$' }
+    $code  = ($pairs | Where-Object { $_ -ne '7F' -and $_ -ne '00' } | Select-Object -Last 1)
+
+    if ($code -and $map.ContainsKey($code)) { return $map[$code] }
+    return ($Raw -replace '\s+', ' ').Trim()
+}
+
+# --- Function to extract RAM slot details (capacity, speed, manufacturer, part number)
+
+function Get-RAMSlotsFromObject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][object]$Source,
+        [hashtable]$ManufacturerMap
+    )
+    $props = $Source.PSObject.Properties.Name
+    $count = $Source.RAMModuleCount
+    if (-not $count) {
+        $indices = foreach ($p in $props) { if ($p -match '^RAM(\d+)_CapacityGB$') { [int]$Matches[1] } }
+        if ($indices) { $count = ($indices | Measure-Object -Maximum).Maximum } else { $count = 0 }
+    }
+
+    $slots = @()
+    for ($i=1; $i -le $count; $i++) {
+        $cap = $Source.("RAM${i}_CapacityGB")
+        $spd = $Source.("RAM${i}_SpeedMHz")
+        $man = $Source.("RAM${i}_Manufacturer")
+        $pn  = $Source.("RAM${i}_PartNumber")
+
+        if ($null -ne $cap -or $null -ne $spd -or $man -or $pn) {
+            $slots += [pscustomobject]@{
+                CapGB        = if ($cap -ne $null) { [int]$cap } else { $null }
+                Speed        = if ($spd -ne $null) { [int]$spd } else { $null }
+                Manufacturer = Get-FriendlyManufacturer -Raw $man -AdditionalMap $ManufacturerMap
+                PartNumber   = ($pn -replace '\s+', ' ').Trim()
+            }
+        }
+    }
+    return $slots
+}
+
+
 # --- Function to summarize the installed RAM modules by size and speed ---
 
 function Get-RAMSummary {
-    try { $ram = @(Get-CimInstance -ClassName Win32_PhysicalMemory) }
-    catch { $ram = @(Get-WmiObject -Class Win32_PhysicalMemory) }
-    if (-not $ram -or $ram.Count -eq 0) { return '' }
+    [CmdletBinding()]
+    param(
+        [object]$Source,
+        [hashtable]$ManufacturerMap
+    )
 
-    $mods = foreach ($m in $ram) {
-        [pscustomobject]@{
-            CapGB = [int][math]::Round($m.Capacity / 1GB, 0)
-            Speed = (@($m.Speed, $m.ConfiguredClockSpeed) | Where-Object { $_ -as [int] } | Select-Object -First 1)
+    $mods = @()
+    if ($Source) {
+        $mods = Get-RAMSlotsFromObject -Source $Source -ManufacturerMap $ManufacturerMap
+    }
+    if (-not $mods -or $mods.Count -eq 0) {
+        try { $ram = @(Get-CimInstance -ClassName Win32_PhysicalMemory) }
+        catch { $ram = @(Get-WmiObject -Class Win32_PhysicalMemory) }
+        foreach ($m in $ram) {
+            $mods += [pscustomobject]@{
+                CapGB        = [int][math]::Round($m.Capacity / 1GB, 0)
+                Speed        = (@($m.Speed, $m.ConfiguredClockSpeed) | Where-Object { $_ -as [int] } | Select-Object -First 1)
+                Manufacturer = Get-FriendlyManufacturer -Raw $m.Manufacturer -AdditionalMap $ManufacturerMap
+                PartNumber   = ($m.PartNumber -replace '\s+', ' ').Trim()
+            }
         }
     }
+    if (-not $mods -or $mods.Count -eq 0) { return '' }
 
     $parts = foreach ($g in ($mods | Group-Object CapGB | Sort-Object Name)) {
         $count  = [int]$g.Count
         $cap    = [int]$g.Name
         $speeds = @($g.Group.Speed | Where-Object { $_ } | Sort-Object -Unique)
-        if ($speeds.Count -eq 0) {
-            "{0}x{1}GB" -f $count, $cap
-        } elseif ($speeds.Count -eq 1) {
-            "{0}x{1}GB@{2}" -f $count, $cap, $speeds[0]
+
+        $speedStr = if ($speeds.Count -eq 0) { '' }
+                    elseif ($speeds.Count -eq 1) { "@$($speeds[0])" }
+                    else { "@$($speeds -join '/')" }
+
+        $pairs = $g.Group | ForEach-Object { "{0}/{1}" -f $_.Manufacturer, $_.PartNumber }
+        $pairs = $pairs | ForEach-Object { $_ -replace '\s+', ' ' } 
+        $uniquePairs = $pairs | Sort-Object -Unique
+
+        if ($uniquePairs.Count -eq 1) {
+            "{0}x{1}GB{2} [{3}]" -f $count, $cap, $speedStr, $uniquePairs[0]
         } else {
-            "{0}x{1}GB@{2}" -f $count, $cap, ($speeds -join '/')
+            $pairList = ($pairs | ForEach-Object { "($_)" }) -join ''
+            "{0}x{1}GB{2} {3}" -f $count, $cap, $speedStr, $pairList
         }
+
     }
 
-    ($parts -join ' + ')
+    $parts -join ' + '
 }
+
 
 # --- Report Builder ---
 
