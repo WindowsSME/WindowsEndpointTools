@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Automates backup, removal, and reinstallation of VMware Workspace ONE / AirWatch Agent.
+    Automates backup, removal, and reinstallation of Omnissa Workspace ONE / AirWatch Agent.
 
 .DESCRIPTION
     This script provides a controlled process for fully uninstalling the Workspace ONE Intelligent Hub 
