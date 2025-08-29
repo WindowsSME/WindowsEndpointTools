@@ -1,81 +1,93 @@
 <#
 .SYNOPSIS
-  Workspace ONE Intelligent Hub reinstallation orchestrator.
+Reinstall Workspace ONE Intelligent Hub/Agent safely: backup keys, uninstall all WS1 components, download latest MSI, reinstall via Windows Installer COM, and relaunch Hub.
 
 .DESCRIPTION
-  This script automates the safe removal and reinstallation of the 
-  VMware/Workspace ONE Intelligent Hub (AirWatch Agent). It performs the following:
-   - Ensures script is running as Administrator.
-   - Logs all operations to both transcript and log file.
-   - Stops Workspace ONE services and backs up deployment manifests.
-   - Uninstalls existing Workspace ONE Hub/Agent (MSI/EXE and APPX).
-   - Cleans up residual registry keys and device certificates.
-   - Downloads the latest installer (or reuses cached MSI if valid).
-   - Verifies installer integrity via SHA-256 (if provided).
-   - Performs a secure reinstallation using Windows Installer COM APIs with retries.
-   - Optionally provides interactive prompts for enrollment details.
-   - Launches the Hub app after installation.
+This script performs a full Workspace ONE Intelligent Hub/Agent refit on Windows:
+- Backs up and blanks WS1 deployment manifest values to prevent stale deployments.
+- Uninstalls WS1 MSI/EXE entries and removes the WS1 APPX for all users.
+- Waits for MSI to become idle (with live elapsed-time logging).
+- Optionally downloads the MSI (reusing a recent, checksum-verified copy if present).
+- Installs the MSI securely via the Windows Installer COM API (STA) with retries for 1618.
+- Optionally passes enrollment properties (SERVER/LGName/USERNAME/PASSWORD).
+- Launches Hub non-elevated when possible.
+- All actions are logged to a timestamped log file; transcripts are optional via -EnableTranscript.
 
 .PARAMETER DownloadUrl
-  URL to download the Workspace ONE Hub/Agent MSI. Defaults to:
-  https://packages.omnissa.com/wsone/AirwatchAgent.msi
+Direct URL to the WS1/Airwatch Agent MSI to download. Defaults to the current public Omnissa package URL.
 
 .PARAMETER OutFile
-  Local path where the MSI will be saved. Defaults to C:\Temp\AirwatchAgent.msi
+Local path to save the MSI (and reuse if fresh/valid). Default: C:\Temp\AirwatchAgent.msi
 
 .PARAMETER Sha256
-  Optional SHA-256 hash for integrity verification of the MSI.
+Optional expected SHA-256 checksum of the MSI. If provided, the file is verified (both reused and downloaded cases).
 
 .PARAMETER Enroll
-  Whether to enroll immediately after install. Accepts 'Y' or 'N'. Default: 'N'
+Whether to set ENROLL=Y/N MSI property. Default: N
 
 .PARAMETER AssignToLoggedInUser
-  Whether to assign enrollment to the logged-in user. Accepts 'Y' or 'N'. Default: 'N'
+Sets ASSIGNTOLOGGEDINUSER=Y/N during install. Default: N
 
 .PARAMETER EnableMsiLogging
-  Enables detailed MSI logging during install.
+Enables MSI native logging during install (to %TEMP%\AirwatchAgent_install_*.log).
 
 .PARAMETER MsiLogLevel
-  MSI logging level: 'Minimal' or 'Verbose'. Default: 'Verbose'
+MSI log verbosity (Minimal|Verbose). Default: Verbose
 
 .PARAMETER MaxAgeDays
-  Maximum age (in days) to reuse an existing downloaded MSI before re-downloading.
-  Default: 7
+If an existing MSI at -OutFile is newer than this many days and large enough (>=100 KB), it may be reused. Default: 7
 
 .PARAMETER Server
-  Workspace ONE UEM server URL (if enrolling).
+Optional Workspace ONE UEM server URL passed to MSI as SERVER=...
 
 .PARAMETER GroupID
-  Organization Group ID (LGName) used during enrollment.
+Optional Organization Group identifier passed as LGName=...
 
 .PARAMETER Username
-  Staging username for enrollment.
+Optional staging USERNAME for enrollment. If set, you can also pass -Password.
 
 .PARAMETER Password
-  Secure string password for staging user (if Username is provided).
+Optional staging PASSWORD (SecureString). Only used when -Username is supplied.
 
 .PARAMETER NonInteractive
-  Skip interactive enrollment prompts (for automated use).
+Skips interactive prompts.
 
-.NOTES
-  Author: James Romeo Gaspar
-  Date: August 29, 2025
-
-  Requirements:
-    - Must be run with elevated Administrator privileges.
-    - Requires PowerShell 5.1+.
+.PARAMETER EnableTranscript
+If supplied, starts a PowerShell transcript in %ProgramData% with a timestamped filename.
 
 .EXAMPLE
-  .\Reinstall-WS1Hub.ps1 -DownloadUrl "https://packages.omnissa.com/wsone/AirwatchAgent.msi" `
-                         -OutFile "C:\Temp\AirwatchAgent.msi" `
-                         -Sha256 "abcdef123456..." `
-                         -Enroll Y -AssignToLoggedInUser N -EnableMsiLogging `
-                         -Server "https://uem.mycompany.com" `
-                         -GroupID "Production" `
-                         -Username "staginguser"
+# Default, interactive using the built-in download URL and reuse window
+.\Reinstall-WS1Hub.ps1
 
-  Removes any existing Workspace ONE Intelligent Hub, cleans up environment, 
-  downloads and verifies the installer, and securely reinstalls with enrollment.
+.EXAMPLE
+# Non-interactive, with explicit enrollment and MSI logging
+.\Reinstall-WS1Hub.ps1 -NonInteractive -Enroll Y -AssignToLoggedInUser N `
+  -Server "https://uem.contoso.com" -GroupID "ACME" -Username "staging@contoso.com" `
+  -Password (Read-Host "Pwd" -AsSecureString) -EnableMsiLogging -MsiLogLevel Verbose
+
+.EXAMPLE
+# Reuse MSI if fresh, otherwise download; verify checksum; show transcript
+.\Reinstall-WS1Hub.ps1 -OutFile C:\Temp\Hub.msi -Sha256 "abcd1234..." -EnableTranscript
+
+.REQUIREMENTS
+- Run as Administrator.
+- Windows with Windows Installer service available.
+- PowerShell 5.1+ (or PowerShell 7+ with Windows compatibility for COM).
+
+.LOGGING
+- Script log: C:\Temp\ws1_backup_uninstall_<yyyyMMdd_HHmmss>.log
+- Optional transcript (if -EnableTranscript): %ProgramData%\ws1_backup_uninstall_<timestamp>.trn
+- Optional MSI log (if -EnableMsiLogging): %TEMP%\AirwatchAgent_install_<timestamp>.log
+
+.NOTES
+- Uses SupportsShouldProcess; you can test with -WhatIf.
+- Handles MSI busy/1618 with retries and clear elapsed-time messages.
+- Cleans residual registry keys and AirWatch-issued device certs (scoped patterns).
+
+.AUTHOR
+James Romeo Gaspar
+August 29, 2025
+
 #>
 
 
@@ -94,7 +106,9 @@ param(
   [string]$GroupID,
   [string]$Username,
   [securestring]$Password,
-  [switch]$NonInteractive
+  [switch]$NonInteractive,
+
+  [switch]$EnableTranscript
 )
 
 Set-StrictMode -Version Latest
@@ -107,7 +121,17 @@ function Log { param([string]$m,[string]$lvl='INFO')
   $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
   "$ts`t($lvl)`t$m" | Tee-Object -FilePath $LogFile -Append
 }
-try { Start-Transcript -Path (Join-Path $env:ProgramData "ws1_backup_uninstall_$DateNow.trn") -ErrorAction SilentlyContinue } catch {}
+
+# Optional transcript
+if ($EnableTranscript) {
+  try {
+    $trnPath = Join-Path $env:ProgramData ("ws1_backup_uninstall_{0}.trn" -f $DateNow)
+    Start-Transcript -Path $trnPath -ErrorAction SilentlyContinue
+    Log ("Transcript enabled at {0}" -f $trnPath)
+  } catch {
+    Log ("Transcript start failed: {0}" -f $_.Exception.Message) 'WARNING'
+  }
+}
 
 # ---------- Helpers ----------
 function Test-Admin {
@@ -125,7 +149,7 @@ function ConvertFrom-CmdLine([string]$s) {
   else { return ,$s,'' }
 }
 
-# --- WS1 uninstall detection + wait ---
+# --- WS1 uninstall detection ---
 function Get-Ws1UninstallEntries {
   $paths = @(
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -146,30 +170,65 @@ function Get-Ws1UninstallEntries {
   ) | Sort-Object -Unique
 }
 
+# --- Wait: Windows Installer idle ---
+function Wait-ForInstallerIdle {
+  [CmdletBinding()]
+  param(
+    [int]$TimeoutSec = 480,
+    [int]$PollMs = 2000
+  )
 
-function Wait-UntilUninstalled {
-  param([int]$TimeoutSec = 900, [int]$PollMs = 1000)
   $sw = [Diagnostics.Stopwatch]::StartNew()
+  $timeoutMin = [math]::Round($TimeoutSec / 60.0, 1)
+
+  # initial banner
+  Log ("Waiting for Windows Installer to be idle... (elapsed: {0}, timeout: {1}s ≈ {2} min)" -f "0s", $TimeoutSec, $timeoutMin)
+
   do {
-    $remaining = Get-Ws1UninstallEntries
-    if (-not $remaining -or $remaining.Count -eq 0) { return $true }
+    $msiBusy    = Get-Process msiexec -ErrorAction SilentlyContinue
+    $inProgress = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress'
+
+    if (-not $msiBusy -and -not $inProgress) {
+      Log ("Windows Installer is idle. (elapsed: {0:N0}s)" -f $sw.Elapsed.TotalSeconds) 'SUCCESS'
+      return $true
+    }
+
+    Log ("Windows Installer busy... still waiting (elapsed: {0:N0}s)" -f $sw.Elapsed.TotalSeconds)
     Start-Sleep -Milliseconds $PollMs
   } while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec)
-  Log ("Timeout waiting for uninstall. Still present: {0}" -f ($remaining -join ', ')) 'WARNING'
+
+  Log ("Windows Installer still busy after {0}s (≈ {1} min)." -f $TimeoutSec, $timeoutMin) 'WARNING'
   return $false
 }
 
-# --- Windows Installer idle wait ---
-function Wait-ForInstallerIdle {
-  param([int]$TimeoutSec = 900, [int]$PollMs = 1000)
+# --- Wait: WS1 uninstall done ---
+function Wait-ForUninstallIdle {
+  [CmdletBinding()]
+  param(
+    [int]$TimeoutSec = 900,
+    [int]$PollMs = 1000
+  )
+
   $sw = [Diagnostics.Stopwatch]::StartNew()
+  $timeoutMin = [math]::Round($TimeoutSec / 60.0, 1)
+
+  # initial banner
+  Log ("Waiting for Workspace ONE components to uninstall... (elapsed: {0}, timeout: {1}s ≈ {2} min)" -f "0s", $TimeoutSec, $timeoutMin)
+
   do {
-   $msiBusy = Get-Process msiexec -ErrorAction SilentlyContinue
-   $inProgress = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress'
-   if (-not $msiBusy -and -not $inProgress) { return $true }
-   Start-Sleep -Milliseconds $PollMs
+    $remaining = Get-Ws1UninstallEntries
+    if (-not $remaining -or $remaining.Count -eq 0) {
+      Log ("Uninstall verification passed; no matching products remain. (elapsed: {0:N0}s)" -f $sw.Elapsed.TotalSeconds) 'SUCCESS'
+      return $true
+    }
+
+    Log ("Uninstall still in progress... remaining: {0} (elapsed: {1:N0}s / {2}s)" -f `
+         ($remaining -join ', '), $sw.Elapsed.TotalSeconds, $TimeoutSec)
+
+    Start-Sleep -Milliseconds $PollMs
   } while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec)
-  Log "Windows Installer still busy after timeout." 'WARNING'
+
+  Log ("Timeout waiting for uninstall. Still present: {0}" -f ($remaining -join ', ')) 'WARNING'
   return $false
 }
 
@@ -190,7 +249,7 @@ function Invoke-BackupAndUninstall {
             Log "Stopped service: $svcName"
           }
         }
-      } catch { Log "Service stop warn ($svcName): $($_.Exception.Message)" 'WARNING' }
+      } catch { Log ("Service stop warn ({0}): {1}" -f $svcName, $_.Exception.Message) 'WARNING' }
     }
 
     $base   = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\AirWatchMDM\AppDeploymentAgent\AppManifests'
@@ -204,12 +263,12 @@ function Invoke-BackupAndUninstall {
             if ($PSCmdlet.ShouldProcess("$path\DeploymentManifestXML", "Backup+Blank")) {
               Rename-ItemProperty -Path $path -Name 'DeploymentManifestXML' -NewName 'DeploymentManifestXML_BAK' -ErrorAction SilentlyContinue
               New-ItemProperty -Path $path -Name 'DeploymentManifestXML' -Value '' -PropertyType String -Force | Out-Null
-              Log "Backed up DeploymentManifestXML for $app"
+              Log ("Backed up DeploymentManifestXML for {0}" -f $app)
             }
           }
-        } catch { Log "Manifest backup warn for ${app}: $($_.Exception.Message)" 'WARNING' }
+        } catch { Log ("Manifest backup warn for {0}: {1}" -f $app, $_.Exception.Message) 'WARNING' }
       }
-    } catch { Log "Manifest enumeration warn: $($_.Exception.Message)" 'WARNING' }
+    } catch { Log ("Manifest enumeration warn: {0}" -f $_.Exception.Message) 'WARNING' }
 
     Log "Uninstalling Workspace ONE Hub/Agent (MSI/EXE)"
     $paths = @(
@@ -230,7 +289,7 @@ function Invoke-BackupAndUninstall {
             [pscustomobject]@{ DisplayName=$dn; UninstallString=$un; QuietUninstallString=$qu }
           }
         } catch {
-          Log "Uninstall key read warn $($_.PsPath): $($_.Exception.Message)" 'WARNING'
+          Log ("Uninstall key read warn {0}: {1}" -f $_.PsPath, $_.Exception.Message) 'WARNING'
         }
       }
     }
@@ -243,62 +302,62 @@ function Invoke-BackupAndUninstall {
       )
       try {
         if (-not ($UninstallString -or $QuietUninstallString)) {
-          Log "Skip ${DisplayName}: no uninstall strings" 'WARNING'
+          Log ("Skip {0}: no uninstall strings" -f $DisplayName) 'WARNING'
           return
         }
         $cmd,$args = if ($QuietUninstallString) { ConvertFrom-CmdLine $QuietUninstallString } else { ConvertFrom-CmdLine $UninstallString }
-        if (-not $cmd) { Log "Skip ${DisplayName}: parsed empty command" 'WARNING'; return }
+        if (-not $cmd) { Log ("Skip {0}: parsed empty command" -f $DisplayName) 'WARNING'; return }
 
         if ($cmd -match '(?i)msiexec(\.exe)?$' -and $args -match '/X\s*({[^}]+})') {
           $alist = @('/X', $Matches[1], '/qn', 'REBOOT=ReallySuppress')
-          Log "Running msiexec $($alist -join ' ') for ${DisplayName}"
+          Log ("Running msiexec {0} for {1}" -f ($alist -join ' '), $DisplayName)
           if ($PSCmdlet.ShouldProcess($DisplayName,"msiexec /X")) {
             $code = (Start-Process msiexec.exe -ArgumentList $alist -PassThru -Wait).ExitCode
-            Log "Uninstall of ${DisplayName} exit code: $code"
+            Log ("Uninstall of {0} exit code: {1}" -f $DisplayName, $code)
           }
         } elseif ($cmd -match '(?i)\.(exe|cmd|bat)$') {
           if ($PSCmdlet.ShouldProcess($DisplayName,"$cmd $args")) {
-            Log "Running quiet uninstall: $cmd $args for ${DisplayName}"
+            Log ("Running quiet uninstall: {0} {1} for {2}" -f $cmd, $args, $DisplayName)
             $code = (Start-Process $cmd -ArgumentList $args -PassThru -Wait).ExitCode
-            Log "Uninstall of ${DisplayName} exit code: $code"
+            Log ("Uninstall of {0} exit code: {1}" -f $DisplayName, $code)
           }
         } else {
           if ($args -match '({[^}]+})') {
             if ($PSCmdlet.ShouldProcess($DisplayName,"msiexec /X {GUID}")) {
               $code = (Start-Process msiexec.exe -ArgumentList '/X',$Matches[1],'/qn','REBOOT=ReallySuppress' -PassThru -Wait).ExitCode
-              Log "Uninstall of ${DisplayName} exit code: $code"
+              Log ("Uninstall of {0} exit code: {1}" -f $DisplayName, $code)
             }
           } else {
-            Log "Unknown uninstall format for ${DisplayName}: $cmd $args" 'WARNING'
+            Log ("Unknown uninstall format for {0}: {1} {2}" -f $DisplayName, $cmd, $args) 'WARNING'
           }
         }
       } catch {
-        Log "Uninstall error for ${DisplayName}: $($_.Exception.Message)" 'WARNING'
+        Log ("Uninstall error for {0}: {1}" -f $DisplayName, $_.Exception.Message) 'WARNING'
       }
     }
 
     foreach ($p in $products) {
       try { Invoke-Uninstall -DisplayName $p.DisplayName -UninstallString $p.UninstallString -QuietUninstallString $p.QuietUninstallString }
-      catch { Log "Uninstall dispatch warn for ${($p.DisplayName -as [string])}: $($_.Exception.Message)" 'WARNING' }
+      catch { Log ("Uninstall dispatch warn for {0}: {1}" -f ($p.DisplayName -as [string]), $_.Exception.Message) 'WARNING' }
     }
 
     Log "Verifying products are removed..."
-    [void](Wait-UntilUninstalled -TimeoutSec 900)
+    [void](Wait-ForUninstallIdle -TimeoutSec 900)
 
-    Log "Waiting for Windows Installer to be idle..."
-    [void](Wait-ForInstallerIdle -TimeoutSec 900)
+    Log ("Waiting for Windows Installer to be idle... (timeout: {0}s ≈ {1} min)" -f 900, [math]::Round(900/60.0,1))
+    [void](Wait-ForInstallerIdle -TimeoutSec 900 -PollMs 1000)
 
     Log "Removing Workspace ONE Hub APPX for all users"
     try {
       Get-AppxPackage -AllUsers -Name '*AirwatchLLC*' -ErrorAction SilentlyContinue | ForEach-Object {
         try {
           if ($PSCmdlet.ShouldProcess($_.PackageFullName,"Remove-AppxPackage -AllUsers")) {
-            Log "Remove-AppxPackage -AllUsers $($_.PackageFullName)"
+            Log ("Remove-AppxPackage -AllUsers {0}" -f $_.PackageFullName)
             Remove-AppxPackage -AllUsers -Package $_.PackageFullName -Confirm:$false -ErrorAction Stop
           }
-        } catch { Log "APPX removal warn ($($_.PackageFullName)): $($_.Exception.Message)" 'WARNING' }
+        } catch { Log ("APPX removal warn ({0}): {1}" -f $_.PackageFullName, $_.Exception.Message) 'WARNING' }
       }
-    } catch { Log "APPX enumeration warn: $($_.Exception.Message)" 'WARNING' }
+    } catch { Log ("APPX enumeration warn: {0}" -f $_.Exception.Message) 'WARNING' }
 
     Log "Cleaning residual registry keys"
     foreach ($rk in @(
@@ -308,9 +367,9 @@ function Invoke-BackupAndUninstall {
       try {
         if ($PSCmdlet.ShouldProcess($rk, "Remove-Item -Recurse -Force")) {
           Remove-Item -Path $rk -Recurse -Force -ErrorAction Stop
-          Log "Removed $rk"
+          Log ("Removed {0}" -f $rk)
         }
-      } catch { Log "Registry cleanup warn ($rk): $($_.Exception.Message)" 'WARNING' }
+      } catch { Log ("Registry cleanup warn ({0}): {1}" -f $rk, $_.Exception.Message) 'WARNING' }
     }
 
     Log "Deleting device certs issued by AirWatch (scoped match)"
@@ -325,44 +384,26 @@ function Invoke-BackupAndUninstall {
             ForEach-Object {
               try {
                 if ($PSCmdlet.ShouldProcess("$storePath -> $($_.Subject)", "Remove certificate")) {
-                  Log "Removing cert from ${storePath}: $($_.Subject)"
+                  Log ("Removing cert from {0}: {1}" -f $storePath, $_.Subject)
                   Remove-Item -Path $_.PSPath -Force -ErrorAction Stop
                 }
               } catch {
-                Log "Cert removal warn ($($_.Subject) in $storePath): $($_.Exception.Message)" 'WARNING'
+                Log ("Cert removal warn ({0} in {1}): {2}" -f $_.Subject, $storePath, $_.Exception.Message) 'WARNING'
               }
             }
         } catch {
-          Log "Cert store access warn ($storePath): $($_.Exception.Message)" 'WARNING'
+          Log ("Cert store access warn ({0}): {1}" -f $storePath, $_.Exception.Message) 'WARNING'
         }
       }
     }
 
     Log "Backup + uninstall stage complete" 'SUCCESS'
-    Log "Log file: $LogFile"
+    Log ("Log file: {0}" -f $LogFile)
   }
   catch {
-    Log "ERROR: $($_.Exception.Message)" 'ERROR'
+    Log ("ERROR: {0}" -f $_.Exception.Message) 'ERROR'
     throw
   }
-}
-
-function Wait-ForInstallerIdle {
-  param([int]$TimeoutSec = 900, [int]$PollMs = 2000)
-  $sw = [Diagnostics.Stopwatch]::StartNew()
-  do {
-    $msiBusy = Get-Process msiexec -ErrorAction SilentlyContinue
-    $inProgressKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress'
-    $inProgress = Test-Path $inProgressKey
-
-    if (-not $msiBusy -and -not $inProgress) { return $true }
-
-    Log "Windows Installer busy... still waiting (elapsed: {0:N0}s)" -f $sw.Elapsed.TotalSeconds
-    Start-Sleep -Milliseconds $PollMs
-  } while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec)
-
-  Log "Windows Installer still busy after $TimeoutSec seconds." 'WARNING'
-  return $false
 }
 
 # ---------- Stage 2: Download ----------
@@ -385,10 +426,10 @@ function Save-WS1AgentInstaller {
             Log ("Using existing MSI (age: {0:N1} days, size: {1} bytes, hash OK). Skipping download." -f $age.TotalDays, $fi.Length)
             $reuse = $true
           } else {
-            Log "Existing MSI hash mismatch (expected $Sha256, got $actual). Re-downloading." 'WARNING'
+            Log ("Existing MSI hash mismatch (expected {0}, got {1}). Re-downloading." -f $Sha256, $actual) 'WARNING'
           }
         } catch {
-          Log "Failed to hash existing MSI. Re-downloading. Error: $($_.Exception.Message)" 'WARNING'
+          Log ("Failed to hash existing MSI. Re-downloading. Error: {0}" -f $_.Exception.Message) 'WARNING'
         }
       } else {
         Log ("Using existing MSI (age: {0:N1} days, size: {1} bytes). Skipping download." -f $age.TotalDays, $fi.Length)
@@ -400,7 +441,7 @@ function Save-WS1AgentInstaller {
   }
   if ($reuse) { return }
 
-  Log "Downloading MSI: $DownloadUrl"
+  Log ("Downloading MSI: {0}" -f $DownloadUrl)
   try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     if ([enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') {
@@ -414,13 +455,13 @@ function Save-WS1AgentInstaller {
   if (-not (Test-Path $OutFile)) { throw "Download failed: $OutFile not found" }
   $size = (Get-Item $OutFile).Length
   if ($size -lt 100000) { throw "Downloaded MSI seems too small ($size bytes)" }
-  Log "Saved to $OutFile ($size bytes)"
+  Log ("Saved to {0} ({1} bytes)" -f $OutFile, $size)
 
   if ($Sha256) {
     Log "Verifying SHA-256..."
     $actual = (Get-FileHash -Algorithm SHA256 -Path $OutFile).Hash.ToLowerInvariant()
     if ($actual -ne $Sha256.ToLowerInvariant()) {
-      Log "SHA-256 mismatch. Expected $Sha256, got $actual" 'ERROR'
+      Log ("SHA-256 mismatch. Expected {0}, got {1}" -f $Sha256, $actual) 'ERROR'
       throw "Checksum verification failed."
     }
     Log "Checksum OK."
@@ -438,14 +479,14 @@ function Invoke-InstallWithRetry {
     try { & $DoInstall; return } catch {
       $msg = $_.Exception.Message
       if ($msg -match '1618|another installation is in progress') {
-        Log "Install blocked (1618). Retry $($i+1)/$Retries after $DelaySec sec..." 'WARNING'
+        Log ("Install blocked (1618). Retry {0}/{1} after {2} sec..." -f ($i+1), $Retries, $DelaySec) 'WARNING'
         Start-Sleep -Seconds $DelaySec
         continue
       }
       throw
     }
   }
-  throw "Install failed after $Retries retries (likely 1618)."
+  throw "Install failed after retries (likely 1618)."
 }
 
 function Install-Ws1AgentSecure {
@@ -488,26 +529,25 @@ function Install-Ws1AgentSecure {
 
   $resolvedMsi = [string](Resolve-Path -LiteralPath $MsiPath).ProviderPath
   $debugProps = ($props -replace 'PASSWORD=[^\s]+', 'PASSWORD=****')
-  Log "DEBUG: MsiPath=$resolvedMsi"
-  Log "DEBUG: Props=$debugProps"
+  Log ("DEBUG: MsiPath={0}" -f $resolvedMsi)
+  Log ("DEBUG: Props={0}" -f $debugProps)
 
   # Ensure Windows Installer is idle before attempting install (8-minute cap)
-  Log "Waiting for Windows Installer to be idle before install..."
+  Log ("Waiting for Windows Installer to be idle before install... (timeout: {0}s ≈ {1} min)" -f 480, [math]::Round(480/60.0,1))
   [void](Wait-ForInstallerIdle -TimeoutSec 480)
 
   try {
     $global:__msiLogPath = $null
     if ($EnableMsiLogging) {
-      $global:__msiLogPath = Join-Path $env:TEMP "AirwatchAgent_install_$((Get-Date).ToString('yyyyMMdd_HHmmss')).log"
+      $global:__msiLogPath = Join-Path $env:TEMP ("AirwatchAgent_install_{0}.log" -f (Get-Date).ToString('yyyyMMdd_HHmmss'))
     }
-    # Compute log mask BEFORE the AddArgument chain (avoid 'if' inside AddArgument)
+
     $logMask = if ($MsiLogLevel -eq 'Verbose') { 1023 } else { 7 }
 
     if ($PSCmdlet.ShouldProcess("AirWatch Agent MSI","Install via COM (STA) with passive UI")) {
       Log "Starting secure install via Windows Installer COM (STA)"
 
       Invoke-InstallWithRetry -DoInstall {
-        # Create STA runspace just for the COM call
         $rs = [runspacefactory]::CreateRunspace()
         $rs.ApartmentState = 'STA'
         $rs.Open()
@@ -515,7 +555,6 @@ function Install-Ws1AgentSecure {
           $ps = [PowerShell]::Create()
           $ps.Runspace = $rs
 
-          # Use a here-string for maximum compatibility
           $script = @'
 param($msiPathParam, $propsParam, $enableLog, $logPath, $logMask)
 $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -538,7 +577,7 @@ $installer.InstallProduct([string]$msiPathParam, [string]$propsParam)
           $ps.Invoke() | Out-Null
           if ($ps.HadErrors) {
             $errs = ($ps.Streams.Error | ForEach-Object { $_.ToString() }) -join '; '
-            throw "Install via COM reported errors: $errs"
+            throw ("Install via COM reported errors: {0}" -f $errs)
           }
         }
         finally {
@@ -547,13 +586,13 @@ $installer.InstallProduct([string]$msiPathParam, [string]$propsParam)
       }
 
       if ($EnableMsiLogging -and $global:__msiLogPath) {
-        Log "MSI logging enabled at: $global:__msiLogPath (level: $MsiLogLevel)"
+        Log ("MSI logging enabled at: {0} (level: {1})" -f $global:__msiLogPath, $MsiLogLevel)
       }
       Log "InstallProduct completed (no COM exception). Verify Hub presence / event logs." 'SUCCESS'
     }
   }
   catch {
-    Log "Install failed: $($_.Exception.Message)" 'ERROR'
+    Log ("Install failed: {0}" -f $_.Exception.Message) 'ERROR'
     throw
   }
   finally {
@@ -562,8 +601,7 @@ $installer.InstallProduct([string]$msiPathParam, [string]$propsParam)
   }
 }
 
-
-# ---------- Stage 4: Launch Hub  ----------
+# ---------- Stage 4: Launch Hub ----------
 function Start-WS1Hub {
   [CmdletBinding()]
   param([int]$WaitSeconds = 30)
@@ -571,12 +609,12 @@ function Start-WS1Hub {
   function Invoke-NonElevated($path, $args='') {
     try {
       $shell = New-Object -ComObject Shell.Application
-      Log "Launching non-elevated via ShellExecute: $path $args"
+      Log ("Launching non-elevated via ShellExecute: {0} {1}" -f $path, $args)
       $shell.ShellExecute($path, $args, $null, 'open', 1) | Out-Null
       return $true
     } catch {
-      Log "ShellExecute failed: $($_.Exception.Message). Falling back to Start-Process (may be elevated)." 'WARNING'
-      try { Start-Process -FilePath $path -ArgumentList $args | Out-Null; return $true } catch { Log "Fallback launch failed: $($_.Exception.Message)" 'ERROR' }
+      Log ("ShellExecute failed: {0}. Falling back to Start-Process (may be elevated)." -f $_.Exception.Message) 'WARNING'
+      try { Start-Process -FilePath $path -ArgumentList $args | Out-Null; return $true } catch { Log ("Fallback launch failed: {0}" -f $_.Exception.Message) 'ERROR' }
     }
     return $false
   }
@@ -605,7 +643,7 @@ function Start-WS1Hub {
     if (-not $exe) { Start-Sleep -Milliseconds 400 }
   }
   if ($exe) {
-    if (Invoke-NonElevated $exe) { Log "Launched Hub classic EXE: $exe" 'SUCCESS' }
+    if (Invoke-NonElevated $exe) { Log ("Launched Hub classic EXE: {0}" -f $exe) 'SUCCESS' }
     return
   }
 
@@ -624,17 +662,17 @@ function Start-WS1Hub {
         $aumid = "$pfn!$appid"
         $moniker = "shell:AppsFolder\$aumid"
         try {
-          Log "Trying UWP ShellExecute: $moniker"
+          Log ("Trying UWP ShellExecute: {0}" -f $moniker)
           $shell.ShellExecute($moniker) | Out-Null
-          Log "Launched Hub via UWP AUMID: $aumid" 'SUCCESS'
+          Log ("Launched Hub via UWP AUMID: {0}" -f $aumid) 'SUCCESS'
           return
         } catch {
           try {
             $item = $folder.Items() | Where-Object { $_.Path -eq $aumid } | Select-Object -First 1
             if ($item) {
-              Log "Invoking AppsFolder item (AUMID): $aumid"
+              Log ("Invoking AppsFolder item (AUMID): {0}" -f $aumid)
               $item.InvokeVerb('open')
-              Log "Launched Hub via AppsFolder AUMID: $aumid" 'SUCCESS'
+              Log ("Launched Hub via AppsFolder AUMID: {0}" -f $aumid) 'SUCCESS'
               return
             }
           } catch { }
@@ -642,7 +680,7 @@ function Start-WS1Hub {
       }
     }
   } catch {
-    Log "UWP launch error: $($_.Exception.Message)" 'WARNING'
+    Log ("UWP launch error: {0}" -f $_.Exception.Message) 'WARNING'
   }
 }
 
@@ -658,7 +696,7 @@ function Read-BoxedPrompt {
         [switch]$Secure
     )
 
-    $boxWidth = 60   # inner width (between the *s)
+    $boxWidth = 60
 
     $borderColor = "DarkCyan"
     $titleColor  = "Yellow"
@@ -671,7 +709,7 @@ function Read-BoxedPrompt {
     $titleLine = ("*   {0}*" -f $Title.PadRight($boxWidth))
     Write-Host $titleLine -ForegroundColor $titleColor -BackgroundColor DarkBlue
 
-    # Subtext line(s) — wrap if needed
+    # Subtext line(s)
     if ($Subtext) {
         $wrapped = $Subtext -split "(.{1,$boxWidth})(\s+|$)" | Where-Object { $_ -and $_ -notmatch '^\s+$' }
         foreach ($line in $wrapped) {
@@ -685,7 +723,6 @@ function Read-BoxedPrompt {
 
     if ($Secure) { return Read-Host $Prompt -AsSecureString } else { return Read-Host $Prompt }
 }
-
 
 try {
   if ($PSCmdlet.ShouldProcess("Workspace ONE Agent", "Backup+Uninstall, then Download+Secure Install")) {
@@ -727,26 +764,24 @@ try {
       }
     }
 
-    # Safety Check: Ensure Installer is idle right before install
-    Log "Waiting for Windows Installer to be idle before starting install..."
-    if (Wait-ForInstallerIdle -TimeoutSec 480) {
-        Log "Windows Installer is idle." 'SUCCESS'
+    Log ("Waiting for Windows Installer to be idle before starting install... (timeout: {0}s ≈ {1} min)" -f 480, [math]::Round(480/60.0,1))
+    if (Wait-ForInstallerIdle -TimeoutSec 480 -PollMs 2000) {
+      Log "Windows Installer is idle." 'SUCCESS'
     } else {
-        Log "Continuing despite possible installer activity (install may fail)." 'WARNING'
+      Log "Continuing despite possible installer activity (install may fail)." 'WARNING'
     }
 
     Install-Ws1AgentSecure -MsiPath $OutFile -Server $srv -GroupID $grp -Username $user -Password $pwd
 
-
     Start-WS1Hub
     Log "=== All stages finished ===" 'SUCCESS'
     Write-Host ""
-    Write-Host "Done. Stage log: $LogFile" -ForegroundColor Green
+    Write-Host ("Done. Stage log: {0}" -f $LogFile) -ForegroundColor Green
     Write-Host ""
   }
 }
 catch {
-  Log "FATAL: $($_.Exception.Message)" 'ERROR'
+  Log ("FATAL: {0}" -f $_.Exception.Message) 'ERROR'
   Write-Error $_
   exit 1
 }
